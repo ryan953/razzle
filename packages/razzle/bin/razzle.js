@@ -12,7 +12,7 @@ prog
   .describe('Build the application')
   .option(
     '-t, --type',
-    'Change the application build type. Must be either `iso` or `spa`.',
+    'Change the application build type. Must be either `iso`, `spa` or `cli`.',
     'iso'
   )
   .action(() => {
@@ -24,7 +24,7 @@ prog
   .describe('Start the application in development mode.')
   .option(
     '-t, --type',
-    'Change the application build type. Must be either `iso` or `spa`.',
+    'Change the application build type. Must be either `iso`, `spa` or `cli`.',
     'iso'
   )
   .action(() => {

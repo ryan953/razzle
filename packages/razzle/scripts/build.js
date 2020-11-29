@@ -29,6 +29,7 @@ const argv = process.argv.slice(2);
 const cliArgs = mri(argv);
 // Set the default build mode to isomorphic
 cliArgs.type = cliArgs.type || 'iso';
+const cliOnly = cliArgs.type === 'cli';
 const clientOnly = cliArgs.type === 'spa';
 // Capture the type (isomorphic or single-page) as an environment variable
 process.env.BUILD_TYPE = cliArgs.type;
@@ -66,8 +67,10 @@ loadRazzleConfig(webpack).then(
           } else {
             console.log(chalk.green('Compiled successfully.\n'));
           }
-          console.log('File sizes after gzip:\n');
-          printFileSizesAfterBuild(stats, previousFileSizes, paths.appBuild);
+          if (!cliOnly) {
+            console.log('File sizes after gzip:\n');
+            printFileSizesAfterBuild(stats, previousFileSizes, paths.appBuild);
+          }
           console.log();
         },
         err => {
@@ -91,16 +94,18 @@ loadRazzleConfig(webpack).then(
         let serverConfig;
         let clientConfig;
         // Create our production webpack configurations and pass in razzle options.
-        clientConfig = await createConfig(
-          'web',
-          'prod',
-          razzle,
-          webpackObject,
-          clientOnly,
-          paths,
-          plugins,
-          razzleOptions
-        );
+        if (!cliOnly) {
+          clientConfig = await createConfig(
+            'web',
+            'prod',
+            razzle,
+            webpackObject,
+            clientOnly,
+            paths,
+            plugins,
+            razzleOptions
+          );
+        }
 
         if (!clientOnly) {
           serverConfig = await createConfig(
@@ -118,26 +123,95 @@ loadRazzleConfig(webpack).then(
         process.noDeprecation = true; // turns off that loadQuery clutter.
 
         console.log('Creating an optimized production build...');
-        console.log('Compiling client...');
-        // First compile the client. We need it to properly output assets.json (asset
-        // manifest) and chunks.json (chunk manifest) files with the correct hashes on file names BEFORE we can start
-        // the server compiler.
-        compile(clientConfig, (err, clientStats) => {
+
+        if (cliOnly) {
+          compileServer(serverConfig).then((serverMessages) => {
+            return resolve({
+              stats: null,
+              previousFileSizes,
+              warnings: Object.assign(
+                {},
+                serverMessages.warnings
+              ),
+            });
+          }).catch(reject);
+        } else { // server and client
+          console.log('Compiling client...');
+          // First compile the client. We need it to properly output assets.json (asset
+          // manifest) and chunks.json (chunk manifest) files with the correct hashes on file names BEFORE we can start
+          // the server compiler.
+          compile(clientConfig, (err, clientStats) => {
+            if (err) {
+              reject(err);
+            }
+            const clientMessages = formatWebpackMessages(
+              clientStats.toJson({}, true)
+            );
+            if (clientMessages.errors.length) {
+              return reject(new Error(clientMessages.errors.join('\n\n')));
+            }
+            if (
+              !process.env.WARNINGS_ERRORS_DISABLE &&
+              process.env.CI &&
+              (typeof process.env.CI !== 'string' ||
+                process.env.CI.toLowerCase() !== 'false') &&
+              clientMessages.warnings.length
+            ) {
+              console.log(
+                chalk.yellow(
+                  '\nTreating warnings as errors because process.env.CI = true.\n' +
+                    'Most CI servers set it automatically.\n'
+                )
+              );
+              return reject(new Error(clientMessages.warnings.join('\n\n')));
+            }
+
+            console.log(chalk.green('Compiled client successfully.'));
+            if (clientOnly) {
+              return resolve({
+                stats: clientStats,
+                previousFileSizes,
+                warnings: clientMessages.warnings,
+              });
+            } else { // server and client
+              compileServer(serverConfig)
+                .then((serverMessages) => {
+                  resolve({
+                    stats: clientStats,
+                    previousFileSizes,
+                    warnings: Object.assign(
+                      {},
+                      clientMessages.warnings,
+                      serverMessages.warnings
+                    ),
+                  });
+                })
+                .catch(reject);
+            }
+          });
+        }
+      });
+    }
+
+    function compileServer(serverConfig) {
+      return new Promise((resolve, reject) => {
+        console.log('Compiling server...');
+        compile(serverConfig, (err, serverStats) => {
           if (err) {
             reject(err);
           }
-          const clientMessages = formatWebpackMessages(
-            clientStats.toJson({}, true)
+          const serverMessages = formatWebpackMessages(
+            serverStats.toJson({}, true)
           );
-          if (clientMessages.errors.length) {
-            return reject(new Error(clientMessages.errors.join('\n\n')));
+          if (serverMessages.errors.length) {
+            return reject(new Error(serverMessages.errors.join('\n\n')));
           }
           if (
             !process.env.WARNINGS_ERRORS_DISABLE &&
             process.env.CI &&
             (typeof process.env.CI !== 'string' ||
               process.env.CI.toLowerCase() !== 'false') &&
-            clientMessages.warnings.length
+            serverMessages.warnings.length
           ) {
             console.log(
               chalk.yellow(
@@ -145,58 +219,13 @@ loadRazzleConfig(webpack).then(
                   'Most CI servers set it automatically.\n'
               )
             );
-            return reject(new Error(clientMessages.warnings.join('\n\n')));
+            return reject(new Error(serverMessages.warnings.join('\n\n')));
           }
-
-          console.log(chalk.green('Compiled client successfully.'));
-          if (clientOnly) {
-            return resolve({
-              stats: clientStats,
-              previousFileSizes,
-              warnings: clientMessages.warnings,
-            });
-          } else {
-            console.log('Compiling server...');
-            compile(serverConfig, (err, serverStats) => {
-              if (err) {
-                reject(err);
-              }
-              const serverMessages = formatWebpackMessages(
-                serverStats.toJson({}, true)
-              );
-              if (serverMessages.errors.length) {
-                return reject(new Error(serverMessages.errors.join('\n\n')));
-              }
-              if (
-                !process.env.WARNINGS_ERRORS_DISABLE &&
-                process.env.CI &&
-                (typeof process.env.CI !== 'string' ||
-                  process.env.CI.toLowerCase() !== 'false') &&
-                serverMessages.warnings.length
-              ) {
-                console.log(
-                  chalk.yellow(
-                    '\nTreating warnings as errors because process.env.CI = true.\n' +
-                      'Most CI servers set it automatically.\n'
-                  )
-                );
-                return reject(new Error(serverMessages.warnings.join('\n\n')));
-              }
-              console.log(chalk.green('Compiled server successfully.'));
-              return resolve({
-                stats: clientStats,
-                previousFileSizes,
-                warnings: Object.assign(
-                  {},
-                  clientMessages.warnings,
-                  serverMessages.warnings
-                ),
-              });
-            });
-          }
-        });
-      });
-    }
+          console.log(chalk.green('Compiled server successfully.'));
+          return resolve({serverMessages});
+        }); // end compile()
+      }); // end new Promise()
+    } // end compileServer()
 
     // Wrap webpackcompile in a try catch.
     function compile(config, cb) {
